@@ -7,8 +7,6 @@ import (
 	"runtime"
 	"testing"
 	"unsafe"
-
-	"hybrid.program/hybridge/internal/retryprobe"
 )
 
 //go:noinline
@@ -24,7 +22,7 @@ func growRetryProbeStack(depth int) byte {
 }
 
 func TestNativeReturnValueDoesNotRetryCompletedCall(t *testing.T) {
-	fn := retryprobe.Address()
+	fn := retryProbeAddress()
 	cases := []struct {
 		name string
 		call func(uintptr) uint64
@@ -109,7 +107,7 @@ func TestShortHeadroomRequestsRetryWithoutInvokingNative(t *testing.T) {
 			var pin runtime.Pinner
 			pin.Pin(state)
 			defer pin.Unpin()
-			value, retry, headroom := retryProbeAtShortHeadroom(retryprobe.Address(), uintptr(unsafe.Pointer(state)), variant, 1024)
+			value, retry, headroom := retryProbeAtShortHeadroom(retryProbeAddress(), uintptr(unsafe.Pointer(state)), variant, 1024)
 			runtime.KeepAlive(state)
 			if headroom < 128 || headroom >= 768 {
 				t.Fatalf("did not reach real short-stack probe interval: %d", headroom)
