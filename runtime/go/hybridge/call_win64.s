@@ -20,8 +20,8 @@
 //   2. save old SP in RBX; restore BEFORE writing results to the Go frame;
 //   3. 16-byte alignment + 32-byte shadow space at every CALL;
 //   4. NOSPLIT: no Go stack growth inside;
-//   5. the fast path returns the NEEDS_DEEP sentinel ($-2) when headroom is
-//      short — the Go wrapper retries on a pooled deep stack.
+//   5. the fast path returns retry=true separately from its native value
+//      when headroom is short; completed calls never request re-execution.
 //
 // The g/TLS read is the runtime's own get_tls pattern — the same code the
 // runtime's asm_amd64.s executes on windows/amd64 in both linking modes
@@ -62,8 +62,8 @@ TEXT ·spHeadroom(SB), NOSPLIT, $0-8
 // each silently assumed a constant entry residue. The deep path was
 // always correct (page-aligned top + ANDQ $-16).
 
-// func callFast1(fn unsafe.Pointer, a1 uintptr) uint64
-TEXT ·callFast1(SB), NOSPLIT, $0-24
+// func callFast1(fn unsafe.Pointer, a1 uintptr) (value uint64, retry bool)
+TEXT ·callFast1(SB), NOSPLIT, $0-25
         MOVQ    fn+0(FP), AX
         MOVQ    a1+8(FP), CX
         get_tls(BX)
@@ -78,15 +78,16 @@ TEXT ·callFast1(SB), NOSPLIT, $0-24
         SUBQ    $32, SP
         CALL    AX
         MOVQ    BX, SP
-        MOVQ    AX, ret+16(FP)
+        MOVQ    AX, value+16(FP)
+        MOVB    $0, retry+24(FP)
         RET
 needsdeep1:
-        MOVQ    $-2, AX
-        MOVQ    AX, ret+16(FP)
+        MOVQ    $0, value+16(FP)
+        MOVB    $1, retry+24(FP)
         RET
 
-// func callFast2(fn unsafe.Pointer, a1, a2 uintptr) uint64
-TEXT ·callFast2(SB), NOSPLIT, $0-32
+// func callFast2(fn unsafe.Pointer, a1, a2 uintptr) (value uint64, retry bool)
+TEXT ·callFast2(SB), NOSPLIT, $0-33
         MOVQ    fn+0(FP), AX
         MOVQ    a1+8(FP), CX
         MOVQ    a2+16(FP), DX
@@ -102,15 +103,16 @@ TEXT ·callFast2(SB), NOSPLIT, $0-32
         SUBQ    $32, SP
         CALL    AX
         MOVQ    BX, SP
-        MOVQ    AX, ret+24(FP)
+        MOVQ    AX, value+24(FP)
+        MOVB    $0, retry+32(FP)
         RET
 needsdeep2:
-        MOVQ    $-2, AX
-        MOVQ    AX, ret+24(FP)
+        MOVQ    $0, value+24(FP)
+        MOVB    $1, retry+32(FP)
         RET
 
-// func callFast3(fn unsafe.Pointer, a1, a2, a3 uintptr) uint64
-TEXT ·callFast3(SB), NOSPLIT, $0-40
+// func callFast3(fn unsafe.Pointer, a1, a2, a3 uintptr) (value uint64, retry bool)
+TEXT ·callFast3(SB), NOSPLIT, $0-41
         MOVQ    fn+0(FP), AX
         MOVQ    a1+8(FP), CX
         MOVQ    a2+16(FP), DX
@@ -127,15 +129,16 @@ TEXT ·callFast3(SB), NOSPLIT, $0-40
         SUBQ    $32, SP
         CALL    AX
         MOVQ    BX, SP
-        MOVQ    AX, ret+32(FP)
+        MOVQ    AX, value+32(FP)
+        MOVB    $0, retry+40(FP)
         RET
 needsdeep3:
-        MOVQ    $-2, AX
-        MOVQ    AX, ret+32(FP)
+        MOVQ    $0, value+32(FP)
+        MOVB    $1, retry+40(FP)
         RET
 
-// func callFast4(fn unsafe.Pointer, a1, a2, a3, a4 uintptr) uint64
-TEXT ·callFast4(SB), NOSPLIT, $0-48
+// func callFast4(fn unsafe.Pointer, a1, a2, a3, a4 uintptr) (value uint64, retry bool)
+TEXT ·callFast4(SB), NOSPLIT, $0-49
         MOVQ    fn+0(FP), AX
         MOVQ    a1+8(FP), CX
         MOVQ    a2+16(FP), DX
@@ -153,19 +156,20 @@ TEXT ·callFast4(SB), NOSPLIT, $0-48
         SUBQ    $32, SP
         CALL    AX
         MOVQ    BX, SP
-        MOVQ    AX, ret+40(FP)
+        MOVQ    AX, value+40(FP)
+        MOVB    $0, retry+48(FP)
         RET
 needsdeep4:
-        MOVQ    $-2, AX
-        MOVQ    AX, ret+40(FP)
+        MOVQ    $0, value+40(FP)
+        MOVB    $1, retry+48(FP)
         RET
 
 // ------------------------------- small-guard fast path (row 4)
 // Same discipline, guard $1024: callees whose descriptor budget is <= 1 KiB
 // take the fast path on shallower stacks. Byte-for-byte the Win64 rules.
 
-// func callFast1S(fn unsafe.Pointer, a1 uintptr) uint64
-TEXT ·callFast1S(SB), NOSPLIT, $0-24
+// func callFast1S(fn unsafe.Pointer, a1 uintptr) (value uint64, retry bool)
+TEXT ·callFast1S(SB), NOSPLIT, $0-25
         MOVQ    fn+0(FP), AX
         MOVQ    a1+8(FP), CX
         get_tls(BX)
@@ -180,15 +184,16 @@ TEXT ·callFast1S(SB), NOSPLIT, $0-24
         SUBQ    $32, SP
         CALL    AX
         MOVQ    BX, SP
-        MOVQ    AX, ret+16(FP)
+        MOVQ    AX, value+16(FP)
+        MOVB    $0, retry+24(FP)
         RET
 needsdeep1s:
-        MOVQ    $-2, AX
-        MOVQ    AX, ret+16(FP)
+        MOVQ    $0, value+16(FP)
+        MOVB    $1, retry+24(FP)
         RET
 
-// func callFast2S(fn unsafe.Pointer, a1, a2 uintptr) uint64
-TEXT ·callFast2S(SB), NOSPLIT, $0-32
+// func callFast2S(fn unsafe.Pointer, a1, a2 uintptr) (value uint64, retry bool)
+TEXT ·callFast2S(SB), NOSPLIT, $0-33
         MOVQ    fn+0(FP), AX
         MOVQ    a1+8(FP), CX
         MOVQ    a2+16(FP), DX
@@ -204,15 +209,16 @@ TEXT ·callFast2S(SB), NOSPLIT, $0-32
         SUBQ    $32, SP
         CALL    AX
         MOVQ    BX, SP
-        MOVQ    AX, ret+24(FP)
+        MOVQ    AX, value+24(FP)
+        MOVB    $0, retry+32(FP)
         RET
 needsdeep2s:
-        MOVQ    $-2, AX
-        MOVQ    AX, ret+24(FP)
+        MOVQ    $0, value+24(FP)
+        MOVB    $1, retry+32(FP)
         RET
 
-// func callFast3S(fn unsafe.Pointer, a1, a2, a3 uintptr) uint64
-TEXT ·callFast3S(SB), NOSPLIT, $0-40
+// func callFast3S(fn unsafe.Pointer, a1, a2, a3 uintptr) (value uint64, retry bool)
+TEXT ·callFast3S(SB), NOSPLIT, $0-41
         MOVQ    fn+0(FP), AX
         MOVQ    a1+8(FP), CX
         MOVQ    a2+16(FP), DX
@@ -229,15 +235,16 @@ TEXT ·callFast3S(SB), NOSPLIT, $0-40
         SUBQ    $32, SP
         CALL    AX
         MOVQ    BX, SP
-        MOVQ    AX, ret+32(FP)
+        MOVQ    AX, value+32(FP)
+        MOVB    $0, retry+40(FP)
         RET
 needsdeep3s:
-        MOVQ    $-2, AX
-        MOVQ    AX, ret+32(FP)
+        MOVQ    $0, value+32(FP)
+        MOVB    $1, retry+40(FP)
         RET
 
-// func callFast4S(fn unsafe.Pointer, a1, a2, a3, a4 uintptr) uint64
-TEXT ·callFast4S(SB), NOSPLIT, $0-48
+// func callFast4S(fn unsafe.Pointer, a1, a2, a3, a4 uintptr) (value uint64, retry bool)
+TEXT ·callFast4S(SB), NOSPLIT, $0-49
         MOVQ    fn+0(FP), AX
         MOVQ    a1+8(FP), CX
         MOVQ    a2+16(FP), DX
@@ -255,11 +262,12 @@ TEXT ·callFast4S(SB), NOSPLIT, $0-48
         SUBQ    $32, SP
         CALL    AX
         MOVQ    BX, SP
-        MOVQ    AX, ret+40(FP)
+        MOVQ    AX, value+40(FP)
+        MOVB    $0, retry+48(FP)
         RET
 needsdeep4s:
-        MOVQ    $-2, AX
-        MOVQ    AX, ret+40(FP)
+        MOVQ    $0, value+40(FP)
+        MOVB    $1, retry+48(FP)
         RET
 
 // ------------------------------- deep path (pooled guarded stack)

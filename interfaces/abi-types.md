@@ -18,6 +18,14 @@ Discipline the bridge generator emits (see spikes/spike3-memory/work/go/hybridge
 4. NOSPLIT: no Go stack growth inside the trampoline;
 5. no callbacks into Go while on a deep stack; panics abort (never unwind across);
 6. runtime.g offsets are version-pinned (extractor: `spikes/spike3-memory/work/extract_offsets.py`; canary test guards them).
+7. The fast trampoline returns an independent retry flag. Only insufficient
+   headroom requests a retry, before the native callee is invoked; every
+   `uint64` payload, including `0xfffffffffffffffe`, is preserved without
+   re-executing a completed call. `Cross1Raw` retains its legacy diagnostic
+   sentinel and its ambiguity; production uses `Cross1..4` / `Cross1S..4S`.
+
+The timing numbers above are historical measurements from before the separate
+retry flag. They are not fresh performance evidence for that change.
 
 ## 2. Type crossing rules
 

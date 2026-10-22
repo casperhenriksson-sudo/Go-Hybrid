@@ -67,3 +67,56 @@ func TestNativeReturnValueDoesNotRetryCompletedCall(t *testing.T) {
 		}
 	}
 }
+
+//go:noinline
+func retryProbeAtShortHeadroom(fn unsafe.Pointer, p uintptr, variant, depth int) (value uint64, retry bool, headroom uintptr) {
+	var frame [256]byte
+	frame[depth%len(frame)] = byte(depth)
+	headroom = SPHeadroomForTest()
+	// This interval is wider than this helper's frame and lies below both
+	// real guards. Walk down the actual stack; never alter runtime offsets
+	// or replace the headroom check with a fake resource measurement.
+	if headroom >= 128 && headroom < 768 {
+		switch variant {
+		case 0:
+			value, retry = callFast1(fn, p)
+		case 1:
+			value, retry = callFast2(fn, p, 2)
+		case 2:
+			value, retry = callFast3(fn, p, 2, 3)
+		case 3:
+			value, retry = callFast4(fn, p, 2, 3, 4)
+		case 4:
+			value, retry = callFast1S(fn, p)
+		case 5:
+			value, retry = callFast2S(fn, p, 2)
+		case 6:
+			value, retry = callFast3S(fn, p, 2, 3)
+		case 7:
+			value, retry = callFast4S(fn, p, 2, 3, 4)
+		}
+	} else if depth > 0 {
+		value, retry, headroom = retryProbeAtShortHeadroom(fn, p, variant, depth-1)
+	}
+	runtime.KeepAlive(&frame)
+	return
+}
+
+func TestShortHeadroomRequestsRetryWithoutInvokingNative(t *testing.T) {
+	for variant := 0; variant < 8; variant++ {
+		t.Run(fmt.Sprintf("variant_%d", variant), func(t *testing.T) {
+			state := &struct{ calls, value uint64 }{value: ^uint64(1)}
+			var pin runtime.Pinner
+			pin.Pin(state)
+			defer pin.Unpin()
+			value, retry, headroom := retryProbeAtShortHeadroom(retryprobe.Address(), uintptr(unsafe.Pointer(state)), variant, 1024)
+			runtime.KeepAlive(state)
+			if headroom < 128 || headroom >= 768 {
+				t.Fatalf("did not reach real short-stack probe interval: %d", headroom)
+			}
+			if !retry || value != 0 || state.calls != 0 {
+				t.Fatalf("headroom=%d: value=%#x retry=%v nativeCalls=%d; want zero/true/zero", headroom, value, retry, state.calls)
+			}
+		})
+	}
+}
