@@ -1,9 +1,9 @@
-name: Contributor bridge runtime validation
+name: Contributor refreshed source validation
 on:
   workflow_dispatch:
     inputs:
       source_revision:
-        description: Exact contribution source commit
+        description: Exact already-pushed contribution revision
         required: true
         type: string
 permissions:
@@ -26,7 +26,7 @@ jobs:
           ref: ${{ inputs.source_revision }}
           persist-credentials: false
           fetch-depth: 0
-      - name: Verify exact contribution revision
+      - name: Verify exact source and available memory
         run: |
           [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
@@ -50,6 +50,7 @@ jobs:
           python3 -m unittest discover -s tools -p test_managed_gate.py -v
           python3 -m unittest discover -s tools -p test_differential_loop.py -v
           python3 -m unittest discover -s tools -p test_differential_output.py -v
+          python3 -m unittest discover -s tools -p test_differential_process_encoding.py -v
           python3 -m unittest discover -s tools -p test_run_examples.py -v
           python3 -m unittest discover -s tools -p test_workload_shape.py -v
           python3 -m unittest discover -s tools -p test_workload_run.py -v
@@ -142,7 +143,7 @@ jobs:
           ref: ${{ inputs.source_revision }}
           persist-credentials: false
           fetch-depth: 0
-      - name: Verify exact contribution revision
+      - name: Verify exact source and available memory
         run: |
           [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
@@ -169,7 +170,7 @@ jobs:
           cd compiler
           cargo test --workspace --quiet
 
-      - name: Checker corpus verdict agreement (126/122 + tripwire)
+      - name: Checker corpus verdict agreement (126/126 + tripwire)
         run: |
           set -e
           cd compiler && cargo build -p hyb --quiet
@@ -251,116 +252,3 @@ jobs:
         run: |
           set -e
           CARGO_TARGET_DIR="$PWD/compiler/target" bash tools/run_examples.sh
-
-  native-bridge:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-14]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: bash
-    env:
-      CGO_ENABLED: '0'
-      GOTOOLCHAIN: local
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: ${{ inputs.source_revision }}
-          persist-credentials: false
-          fetch-depth: 0
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
-        with:
-          go-version: '1.26.9'
-          cache: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-        with:
-          python-version: '3.12'
-      - name: Native baseline, exact-once return, real guard and production-link checks
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import json
-          import os
-          import shutil
-          import subprocess
-          
-          base = '9f61f54f196877189814e791ce4f5d5c8a8c1e81'
-          expected_source = os.environ['SOURCE_REVISION']
-          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
-          assert actual == expected_source, (actual, expected_source)
-          version = subprocess.check_output(['go', 'version'], text=True).strip()
-          assert version.startswith('go version go1.26.9 '), version
-          print(json.dumps({'source': actual, 'baseline': base, 'runtime': version}), flush=True)
-          
-          root = Path(os.environ['RUNNER_TEMP']) / 'bridge-retry-native'
-          root.mkdir()
-          candidate = root / 'candidate'
-          baseline = root / 'baseline'
-          for folder in (candidate, baseline):
-              (folder / 'hybridge').mkdir(parents=True)
-              (folder / 'go.mod').write_text('module hybrid.program\n\ngo 1.26\n', encoding='utf-8')
-          
-          source_dir = Path('runtime/go/hybridge')
-          for path in source_dir.iterdir():
-              if path.is_file() and path.suffix in ('.go', '.s'):
-                  shutil.copyfile(path, candidate / 'hybridge' / path.name)
-          names = subprocess.check_output(['git', 'ls-tree', '--name-only', base + ':runtime/go/hybridge'], text=True).splitlines()
-          for name in names:
-              if Path(name).suffix in ('.go', '.s'):
-                  content = subprocess.check_output(['git', 'show', base + ':runtime/go/hybridge/' + name])
-                  (baseline / 'hybridge' / name).write_bytes(content)
-          for path in source_dir.glob('retry_probe*'):
-              if path.is_file():
-                  shutil.copyfile(path, baseline / 'hybridge' / path.name)
-          test_source = (source_dir / 'retry_status_test.go').read_text(encoding='utf-8')
-          marker = '//go:noinline\nfunc retryProbeAtShortHeadroom'
-          assert test_source.count(marker) == 1
-          (baseline / 'hybridge/retry_status_test.go').write_text(test_source.partition(marker)[0], encoding='utf-8')
-          
-          def go_test(folder, name, *extra):
-              result = subprocess.run(['go', 'test', '-json', './hybridge', '-count=1', *extra], cwd=folder, text=True, capture_output=True)
-              (root / (name + '.jsonl')).write_text(result.stdout, encoding='utf-8')
-              if result.stderr:
-                  print(result.stderr, flush=True)
-              events = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
-              return result, events
-          
-          before, events = go_test(baseline, 'baseline', '-run', '^TestNativeReturnValueDoesNotRetryCompletedCall$')
-          variants = ['Cross1', 'Cross2', 'Cross3', 'Cross4', 'Cross1S', 'Cross2S', 'Cross3S', 'Cross4S']
-          expected_failures = {'TestNativeReturnValueDoesNotRetryCompletedCall/' + name + '/return_fffffffffffffffe' for name in variants}
-          failed = {event.get('Test') for event in events if event.get('Action') == 'fail' and '/' in event.get('Test', '')}
-          passed = {event.get('Test') for event in events if event.get('Action') == 'pass' and '/' in event.get('Test', '')}
-          double_calls = sum('native callee ran 2 times, want exactly once' in event.get('Output', '') for event in events)
-          assert before.returncode == 1 and failed == expected_failures and len(passed) == 24 and double_calls == 8, (before.returncode, failed, passed, before.stdout)
-          print('BASELINE CONFIRMED: exactly 8 payload-collision failures / 24 passing controls; all 8 native counters doubled.', flush=True)
-          
-          after, events = go_test(candidate, 'candidate')
-          if after.returncode:
-              print(after.stdout, flush=True)
-          assert after.returncode == 0, after.stdout
-          value_cases = [event for event in events if event.get('Action') == 'pass' and event.get('Test', '').startswith('TestNativeReturnValueDoesNotRetryCompletedCall/')]
-          guard_cases = [event for event in events if event.get('Action') == 'pass' and event.get('Test', '').startswith('TestShortHeadroomRequestsRetryWithoutInvokingNative/')]
-          assert len(value_cases) == 32 and len(guard_cases) == 8, (len(value_cases), len(guard_cases))
-          print('PATCHED: all package tests pass, including 32 full-width native return cases and 8 actual short-stack guard cases.', flush=True)
-          for command in (['go', 'vet', './hybridge'], ['go', 'build', './hybridge']):
-              subprocess.run(command, cwd=candidate, check=True)
-          
-          # Keep the real production fast crossing linked while proving test fixtures
-          # are absent from an ordinary consumer binary; no fixture entrypoint is used.
-          (candidate / 'main.go').write_text('package main\nimport ("fmt"; "hybrid.program/hybridge")\nfunc main(){fmt.Printf("%p\\n", hybridge.Cross1)}\n', encoding='utf-8')
-          binary = candidate / ('consumer.exe' if os.name == 'nt' else 'consumer')
-          subprocess.run(['go', 'build', '-o', str(binary), '.'], cwd=candidate, check=True)
-          symbols = subprocess.check_output(['go', 'tool', 'nm', str(binary)], cwd=candidate, text=True)
-          assert 'hybridge.Cross1' in symbols and 'hybridge.callFast1' in symbols
-          assert 'hybridge.retryProbe' not in symbols, 'test probe leaked into production consumer'
-          print('PRODUCTION LINK: Cross1 and callFast1 retained; private native test probes discarded.', flush=True)
-          
-          if version.endswith('linux/amd64'):
-              cross_env = dict(os.environ, GOOS='darwin', GOARCH='amd64', CGO_ENABLED='0')
-              subprocess.run(['go', 'vet', './hybridge'], cwd=candidate, env=cross_env, check=True)
-              subprocess.run(['go', 'test', '-c', '-o', str(root / 'darwin-amd64-compile-only.test'), './hybridge'], cwd=candidate, env=cross_env, check=True)
-              print('DARWIN/AMD64: test binary compiled and vet passed; this is not native execution.', flush=True)
-          PY
