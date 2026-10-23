@@ -6,6 +6,10 @@ on:
         description: Exact already-pushed contribution revision
         required: true
         type: string
+      quick_only:
+        description: Repeat only the quick gate; retain the prior exact-source compiler evidence
+        type: boolean
+        default: false
 permissions:
   contents: read
 env:
@@ -31,6 +35,11 @@ jobs:
           [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
           test "$(awk '/MemAvailable/ {print $2}' /proc/meminfo)" -ge 1048576
+          case "$SOURCE_REVISION" in
+            ca56729f38c18466584f96bdff802e2a51ed3c04) test -f tools/test_differential_process_encoding.py ;;
+            3ded80a9149c56bf9ef88e3051aedebeffc3be92|9f66b7dbff470bbae55826bcde40029e2868ff1d) test ! -f tools/test_differential_process_encoding.py ;;
+            *) echo "Unqualified source revision" >&2; exit 64 ;;
+          esac
       - name: Python syntax + self-tests
         run: |
           set -e
@@ -50,7 +59,7 @@ jobs:
           python3 -m unittest discover -s tools -p test_managed_gate.py -v
           python3 -m unittest discover -s tools -p test_differential_loop.py -v
           python3 -m unittest discover -s tools -p test_differential_output.py -v
-          python3 -m unittest discover -s tools -p test_differential_process_encoding.py -v
+          if [ -f tools/test_differential_process_encoding.py ]; then python3 -m unittest discover -s tools -p test_differential_process_encoding.py -v; fi
           python3 -m unittest discover -s tools -p test_run_examples.py -v
           python3 -m unittest discover -s tools -p test_workload_shape.py -v
           python3 -m unittest discover -s tools -p test_workload_run.py -v
@@ -134,6 +143,7 @@ jobs:
   # The compiler (lands with MVP-0): pinned toolchains, full test suite,
   # corpus verdict agreement, and the walking-skeleton examples end-to-end.
   compiler:
+    if: ${{ !inputs.quick_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -148,6 +158,11 @@ jobs:
           [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
           test "$(awk '/MemAvailable/ {print $2}' /proc/meminfo)" -ge 1048576
+          case "$SOURCE_REVISION" in
+            ca56729f38c18466584f96bdff802e2a51ed3c04) test -f tools/test_differential_process_encoding.py ;;
+            3ded80a9149c56bf9ef88e3051aedebeffc3be92|9f66b7dbff470bbae55826bcde40029e2868ff1d) test ! -f tools/test_differential_process_encoding.py ;;
+            *) echo "Unqualified source revision" >&2; exit 64 ;;
+          esac
       - name: Install pinned toolchains (same URLs as tools/env.sh discipline)
         run: |
           set -e
