@@ -105,6 +105,67 @@ class PatternExtractionTests(unittest.TestCase):
             ["test_live.py"])
 
 
+class YamlScalarTests(unittest.TestCase):
+    def test_block_step_names_do_not_register_discovery(self):
+        for indicator in ("|", ">", "|-", ">-", "|2", "|+2", "|2-"):
+            with self.subTest(indicator=indicator):
+                workflow = (
+                    "- name: " + indicator + "\n"
+                    "    python3 -m unittest discover -s tools -p test_hidden.py\n"
+                    "  run: echo only-metadata\n"
+                )
+                self.assertEqual(guard.registered_patterns(workflow), [])
+
+    def test_block_environment_values_do_not_register_direct_scripts(self):
+        for key in ("EXAMPLE", '"EXAMPLE"', "'EXAMPLE'"):
+            with self.subTest(key=key):
+                workflow = ("env:\n  " + key + ": |- # documentation\n"
+                            "    python3 tests/test_hidden.py\n")
+                self.assertFalse(guard.is_registered_direct(
+                    "tests/test_hidden.py", workflow))
+
+    def test_block_action_input_does_not_register_discovery(self):
+        self.assertEqual(guard.registered_patterns(
+            "with:\n  example: >-\n"
+            "    python3 -m unittest discover -s tools -p test_hidden.py\n"), [])
+
+    def test_sibling_run_after_sequence_metadata_is_still_registered(self):
+        workflow = (
+            "    - name: |\n"
+            "        python3 -m unittest discover -s tools -p test_hidden.py\n"
+            "      run: python3 -m unittest discover -s tools -p test_live.py\n"
+        )
+        self.assertEqual(guard.registered_patterns(workflow), ["test_live.py"])
+
+    def test_literal_run_blocks_keep_discovery_and_direct_entry_points(self):
+        for key in ("run", '"run"', "'run'"):
+            with self.subTest(key=key):
+                workflow = (
+                    "- " + key + ": |\n"
+                    "    python3 -m unittest discover -s tools -p test_live.py\n"
+                    "    python3 tests/test_live.py\n"
+                )
+                self.assertEqual(guard.registered_patterns(workflow), ["test_live.py"])
+                self.assertTrue(guard.is_registered_direct("tests/test_live.py", workflow))
+
+    def test_comments_describing_scalars_do_not_hide_real_commands(self):
+        workflow = ("run: |\n"
+                    "  # EXAMPLE: |\n"
+                    "  python3 -m unittest discover -s tools -p test_live.py\n")
+        self.assertEqual(guard.registered_patterns(workflow), ["test_live.py"])
+
+    def test_blank_lines_do_not_end_a_metadata_scalar(self):
+        workflow = (
+            "name: |\n"
+            "  python3 -m unittest discover -s tools -p test_hidden.py\n"
+            "\n"
+            "  python3 tests/test_hidden.py\n"
+            "run: python3 -m unittest discover -s tools -p test_live.py\n"
+        )
+        self.assertEqual(guard.registered_patterns(workflow), ["test_live.py"])
+        self.assertFalse(guard.is_registered_direct("tests/test_hidden.py", workflow))
+
+
 class RegistrationTests(unittest.TestCase):
     def build(self, workflow, suites):
         """Write a temp root with `suites` and return (root, workflow_text)."""
@@ -266,6 +327,48 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual([rel for rel, _ in guard.unregistered(root, text)],
                          ["tools/test_disabled.py", "tests/test_disabled.py"])
 
+    def test_metadata_cannot_register_failing_suites_in_real_guard_cli(self):
+        workflow = (
+            "name: metadata-counterexample\non: workflow_dispatch\njobs:\n"
+            "  quick:\n    runs-on: ubuntu-latest\n    steps:\n"
+            "      - name: |\n"
+            "          python3 -m unittest discover -s tools -p test_hidden.py\n"
+            "          python3 tests/test_hidden.py\n"
+            "        run: python3 -m unittest discover -s tools -p test_control.py\n"
+        )
+        root, text = self.build(workflow, ["tools/test_hidden.py",
+                                         "tools/test_control.py", "tests/test_hidden.py"])
+        hidden = (
+            "import unittest\nclass Hidden(unittest.TestCase):\n"
+            "    def test_failure(self): self.fail('hidden suite executed')\n"
+            "if __name__ == '__main__': unittest.main()\n"
+        )
+        for rel in ("tools/test_hidden.py", "tests/test_hidden.py"):
+            (root / rel).write_text(hidden, encoding="utf-8")
+        (root / "tools/test_control.py").write_text(
+            "import unittest\nclass Control(unittest.TestCase):\n"
+            "    def test_pass(self): pass\n", encoding="utf-8")
+        workflow_path = root / "ci.yml"
+        workflow_path.write_text(text, encoding="utf-8")
+        command = [sys.executable, "-m", "unittest", "discover", "-s", "tools", "-p"]
+        control = subprocess.run(command + ["test_control.py"], cwd=root,
+                                 capture_output=True, text=True, timeout=15)
+        self.assertEqual(control.returncode, 0, control.stderr)
+        self.assertIn("Ran 1 test", control.stderr)
+        for args in (command + ["test_hidden.py"],
+                     [sys.executable, "tests/test_hidden.py"]):
+            result = subprocess.run(args, cwd=root, capture_output=True,
+                                    text=True, timeout=15)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("hidden suite executed", result.stderr)
+        result = subprocess.run(
+            [sys.executable, str(Path(guard.__file__)), "--root", str(root),
+             "--workflow", str(workflow_path)], capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("UNREGISTERED TEST FILE(S)", result.stdout)
+        self.assertIn("tools/test_hidden.py", result.stdout)
+        self.assertIn("tests/test_hidden.py", result.stdout)
+
 
 class GuardMisuseTests(unittest.TestCase):
     def run_main(self, workflow, suites=()):
@@ -313,6 +416,9 @@ class GuardMisuseTests(unittest.TestCase):
             self.run_main("python3 -m unittest discover -s tools/fuzz -p 'test_*.py'\n",
                           ["tools/fuzz/test_control.py", "tools/test_orphan.py"]), 1)
 
+
+    def test_start_directory_escaping_repo_root_is_rejected(self):
+        self.assertEqual(self.run_main("python3 -m unittest discover -s .. -p 'test_*.py'\n", ["tools/test_x.py"]), 1)
 
 if __name__ == "__main__":
     unittest.main()
