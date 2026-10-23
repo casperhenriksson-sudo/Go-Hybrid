@@ -38,6 +38,7 @@ jobs:
           python3 -m unittest discover -s tools -p test_managed_gate.py -v
           python3 -m unittest discover -s tools -p test_differential_loop.py -v
           python3 -m unittest discover -s tools -p test_differential_output.py -v
+          python3 -m unittest discover -s tools -p test_differential_process_encoding.py -v
           python3 -m unittest discover -s tools -p test_run_examples.py -v
           python3 -m unittest discover -s tools -p test_workload_shape.py -v
           python3 -m unittest discover -s tools -p test_workload_run.py -v
@@ -148,7 +149,7 @@ jobs:
           cd compiler
           cargo test --workspace --quiet
 
-      - name: Checker corpus verdict agreement (120/120 + tripwire)
+      - name: Checker corpus verdict agreement (126/126 + tripwire)
         run: |
           set -e
           cd compiler && cargo build -p hyb --quiet

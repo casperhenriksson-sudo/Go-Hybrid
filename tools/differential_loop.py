@@ -206,6 +206,11 @@ def documented_runtime_hazard(stderr, hazards):
     return False
 
 
+def process_text(value, errors="replace"):
+    """Decode captured bytes explicitly; str also supports older test fixtures."""
+    return value.decode("utf-8", errors) if isinstance(value, bytes) else (value or "")
+
+
 def build_and_run(bin_path, hy_path, workdir, hazards=(), expected_output=None):
     """Full pipeline: hyb build + run the binary. Returns (ok, detail)."""
     # TimeoutExpired is a per-case harness fault like any other build/run
@@ -214,18 +219,18 @@ def build_and_run(bin_path, hy_path, workdir, hazards=(), expected_output=None):
     try:
         build = subprocess.run(
             [bin_path, "build", hy_path],
-            cwd=workdir, capture_output=True, text=True, timeout=300,
+            cwd=workdir, capture_output=True, timeout=300,
         )
     except subprocess.TimeoutExpired as exc:
         return False, f"build timed out after {exc.timeout}s"
     if build.returncode != 0:
-        return False, "build failed: " + (build.stderr or build.stdout).strip()[-300:]
+        return False, "build failed: " + process_text(build.stderr or build.stdout).strip()[-300:]
     binary = os.path.join(workdir, "a.out")
     if not os.path.exists(binary):
         return False, "no a.out produced"
     try:
         run = subprocess.run(
-            [binary], cwd=workdir, capture_output=True, text=True, timeout=60
+            [binary], cwd=workdir, capture_output=True, timeout=60
         )
     except subprocess.TimeoutExpired as exc:
         return False, f"run timed out after {exc.timeout}s"
@@ -236,15 +241,21 @@ def build_and_run(bin_path, hy_path, workdir, hazards=(), expected_output=None):
         go_fatal_exit = run.returncode == 2 or (
             os.name == "posix" and run.returncode == -signal.SIGABRT
         )
-        if go_fatal_exit and documented_runtime_hazard(run.stderr, hazards):
+        if go_fatal_exit and documented_runtime_hazard(process_text(run.stderr), hazards):
             detail = "documented RUNTIME-HAZARD fatal (pre-registered)"
         else:
-            return False, f"run exit {run.returncode}: {(run.stderr or run.stdout)[-200:]}"
+            return False, f"run exit {run.returncode}: {process_text(run.stderr or run.stdout)[-200:]}"
     if expected_output is not None:
-        stdout = run.stdout.replace("\r\n", "\n")
+        # Capture bytes to avoid locale-dependent decoding in subprocess reader
+        # threads. Only an asserted text result needs strict UTF-8: replacement
+        # decoding here could make invalid bytes match a registered U+FFFD.
+        try:
+            stdout = process_text(run.stdout, errors="strict").replace("\r\n", "\n")
+        except UnicodeDecodeError as exc:
+            return False, f"stdout is not valid UTF-8: {exc}"
         if stdout not in (expected_output, expected_output + "\n"):
             return False, (f"stdout mismatch: expected {expected_output[:200]!r}, "
-                           f"got {run.stdout[:200]!r}")
+                           f"got {stdout[:200]!r}")
     return True, detail
 
 
