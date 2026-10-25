@@ -52,13 +52,13 @@ TEXT ·spHeadroom(SB), NOSPLIT, $0-8
 
 // ------------------------------- fast path (caller's goroutine stack)
 // The stackguard check is INLINED here (what the bridge generator emits per
-// call site). If headroom < guard, the callee is NOT invoked: the sentinel
-// NEEDS_DEEP (-2 = ^uint64(1)) is returned and the Go wrapper retries on a
-// pooled deep stack. The headroom is measured AFTER the assembler's own
+// call site). If headroom < guard, the callee is NOT invoked: retry=true
+// is returned separately from the native value and the Go wrapper retries
+// on a pooled deep stack. The headroom is measured AFTER the assembler's own
 // LR/FP prologue, i.e. 32 bytes conservative — same ordering as amd64.
 
-// func callFast1(fn unsafe.Pointer, a1 uintptr) uint64
-TEXT ·callFast1(SB), NOSPLIT, $16-24
+// func callFast1(fn unsafe.Pointer, a1 uintptr) (value uint64, retry bool)
+TEXT ·callFast1(SB), NOSPLIT, $16-25
 	MOVD	fn+0(FP), R9
 	MOVD	a1+8(FP), R0
 	MOVD	OFF_g_stackguard0(g), R10
@@ -67,15 +67,17 @@ TEXT ·callFast1(SB), NOSPLIT, $16-24
 	CMP	$4096, R11
 	BLO	needsdeep1
 	BL	(R9)
-	MOVD	R0, ret+16(FP)
+	MOVD	R0, value+16(FP)
+	MOVB	ZR, retry+24(FP)
 	RET
 needsdeep1:
-	MOVD	$-2, R0
-	MOVD	R0, ret+16(FP)
+	MOVD	ZR, value+16(FP)
+	MOVD	$1, R0
+	MOVB	R0, retry+24(FP)
 	RET
 
-// func callFast2(fn unsafe.Pointer, a1, a2 uintptr) uint64
-TEXT ·callFast2(SB), NOSPLIT, $16-32
+// func callFast2(fn unsafe.Pointer, a1, a2 uintptr) (value uint64, retry bool)
+TEXT ·callFast2(SB), NOSPLIT, $16-33
 	MOVD	fn+0(FP), R9
 	MOVD	a1+8(FP), R0
 	MOVD	a2+16(FP), R1
@@ -85,15 +87,17 @@ TEXT ·callFast2(SB), NOSPLIT, $16-32
 	CMP	$4096, R11
 	BLO	needsdeep2
 	BL	(R9)
-	MOVD	R0, ret+24(FP)
+	MOVD	R0, value+24(FP)
+	MOVB	ZR, retry+32(FP)
 	RET
 needsdeep2:
-	MOVD	$-2, R0
-	MOVD	R0, ret+24(FP)
+	MOVD	ZR, value+24(FP)
+	MOVD	$1, R0
+	MOVB	R0, retry+32(FP)
 	RET
 
-// func callFast3(fn unsafe.Pointer, a1, a2, a3 uintptr) uint64
-TEXT ·callFast3(SB), NOSPLIT, $16-40
+// func callFast3(fn unsafe.Pointer, a1, a2, a3 uintptr) (value uint64, retry bool)
+TEXT ·callFast3(SB), NOSPLIT, $16-41
 	MOVD	fn+0(FP), R9
 	MOVD	a1+8(FP), R0
 	MOVD	a2+16(FP), R1
@@ -104,15 +108,17 @@ TEXT ·callFast3(SB), NOSPLIT, $16-40
 	CMP	$4096, R11
 	BLO	needsdeep3
 	BL	(R9)
-	MOVD	R0, ret+32(FP)
+	MOVD	R0, value+32(FP)
+	MOVB	ZR, retry+40(FP)
 	RET
 needsdeep3:
-	MOVD	$-2, R0
-	MOVD	R0, ret+32(FP)
+	MOVD	ZR, value+32(FP)
+	MOVD	$1, R0
+	MOVB	R0, retry+40(FP)
 	RET
 
-// func callFast4(fn unsafe.Pointer, a1, a2, a3, a4 uintptr) uint64
-TEXT ·callFast4(SB), NOSPLIT, $16-48
+// func callFast4(fn unsafe.Pointer, a1, a2, a3, a4 uintptr) (value uint64, retry bool)
+TEXT ·callFast4(SB), NOSPLIT, $16-49
 	MOVD	fn+0(FP), R9
 	MOVD	a1+8(FP), R0
 	MOVD	a2+16(FP), R1
@@ -124,11 +130,13 @@ TEXT ·callFast4(SB), NOSPLIT, $16-48
 	CMP	$4096, R11
 	BLO	needsdeep4
 	BL	(R9)
-	MOVD	R0, ret+40(FP)
+	MOVD	R0, value+40(FP)
+	MOVB	ZR, retry+48(FP)
 	RET
 needsdeep4:
-	MOVD	$-2, R0
-	MOVD	R0, ret+40(FP)
+	MOVD	ZR, value+40(FP)
+	MOVD	$1, R0
+	MOVB	R0, retry+48(FP)
 	RET
 
 // ------------------------------- small-guard fast path (row 4: per-callee budgets)
@@ -137,8 +145,8 @@ needsdeep4:
 // measured/argued in interfaces/descriptors.md) take the fast path on
 // SHALLOWER stacks. Everything else is byte-for-byte the same rules.
 
-// func callFast1S(fn unsafe.Pointer, a1 uintptr) uint64
-TEXT ·callFast1S(SB), NOSPLIT, $16-24
+// func callFast1S(fn unsafe.Pointer, a1 uintptr) (value uint64, retry bool)
+TEXT ·callFast1S(SB), NOSPLIT, $16-25
 	MOVD	fn+0(FP), R9
 	MOVD	a1+8(FP), R0
 	MOVD	OFF_g_stackguard0(g), R10
@@ -147,15 +155,17 @@ TEXT ·callFast1S(SB), NOSPLIT, $16-24
 	CMP	$1024, R11
 	BLO	needsdeep1s
 	BL	(R9)
-	MOVD	R0, ret+16(FP)
+	MOVD	R0, value+16(FP)
+	MOVB	ZR, retry+24(FP)
 	RET
 needsdeep1s:
-	MOVD	$-2, R0
-	MOVD	R0, ret+16(FP)
+	MOVD	ZR, value+16(FP)
+	MOVD	$1, R0
+	MOVB	R0, retry+24(FP)
 	RET
 
-// func callFast2S(fn unsafe.Pointer, a1, a2 uintptr) uint64
-TEXT ·callFast2S(SB), NOSPLIT, $16-32
+// func callFast2S(fn unsafe.Pointer, a1, a2 uintptr) (value uint64, retry bool)
+TEXT ·callFast2S(SB), NOSPLIT, $16-33
 	MOVD	fn+0(FP), R9
 	MOVD	a1+8(FP), R0
 	MOVD	a2+16(FP), R1
@@ -165,15 +175,17 @@ TEXT ·callFast2S(SB), NOSPLIT, $16-32
 	CMP	$1024, R11
 	BLO	needsdeep2s
 	BL	(R9)
-	MOVD	R0, ret+24(FP)
+	MOVD	R0, value+24(FP)
+	MOVB	ZR, retry+32(FP)
 	RET
 needsdeep2s:
-	MOVD	$-2, R0
-	MOVD	R0, ret+24(FP)
+	MOVD	ZR, value+24(FP)
+	MOVD	$1, R0
+	MOVB	R0, retry+32(FP)
 	RET
 
-// func callFast3S(fn unsafe.Pointer, a1, a2, a3 uintptr) uint64
-TEXT ·callFast3S(SB), NOSPLIT, $16-40
+// func callFast3S(fn unsafe.Pointer, a1, a2, a3 uintptr) (value uint64, retry bool)
+TEXT ·callFast3S(SB), NOSPLIT, $16-41
 	MOVD	fn+0(FP), R9
 	MOVD	a1+8(FP), R0
 	MOVD	a2+16(FP), R1
@@ -184,15 +196,17 @@ TEXT ·callFast3S(SB), NOSPLIT, $16-40
 	CMP	$1024, R11
 	BLO	needsdeep3s
 	BL	(R9)
-	MOVD	R0, ret+32(FP)
+	MOVD	R0, value+32(FP)
+	MOVB	ZR, retry+40(FP)
 	RET
 needsdeep3s:
-	MOVD	$-2, R0
-	MOVD	R0, ret+32(FP)
+	MOVD	ZR, value+32(FP)
+	MOVD	$1, R0
+	MOVB	R0, retry+40(FP)
 	RET
 
-// func callFast4S(fn unsafe.Pointer, a1, a2, a3, a4 uintptr) uint64
-TEXT ·callFast4S(SB), NOSPLIT, $16-48
+// func callFast4S(fn unsafe.Pointer, a1, a2, a3, a4 uintptr) (value uint64, retry bool)
+TEXT ·callFast4S(SB), NOSPLIT, $16-49
 	MOVD	fn+0(FP), R9
 	MOVD	a1+8(FP), R0
 	MOVD	a2+16(FP), R1
@@ -204,11 +218,13 @@ TEXT ·callFast4S(SB), NOSPLIT, $16-48
 	CMP	$1024, R11
 	BLO	needsdeep4s
 	BL	(R9)
-	MOVD	R0, ret+40(FP)
+	MOVD	R0, value+40(FP)
+	MOVB	ZR, retry+48(FP)
 	RET
 needsdeep4s:
-	MOVD	$-2, R0
-	MOVD	R0, ret+40(FP)
+	MOVD	ZR, value+40(FP)
+	MOVD	$1, R0
+	MOVB	R0, retry+48(FP)
 	RET
 
 // ------------------------------- deep path (pooled guarded mmap stack)

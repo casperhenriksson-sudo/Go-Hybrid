@@ -13,8 +13,8 @@ func TestSPHeadroomPositive(t *testing.T) {
 }
 
 // TestNeedsDeepSentinelShape: the sentinel must never collide with a
-// plausible small payload; pin its value (the retry logic in Cross1/2/3/4
-// compares every fast-path result against it).
+// plausible small payload; retain its value for the legacy Cross1Raw
+// diagnostic. Production Cross wrappers use an independent retry flag.
 func TestNeedsDeepSentinelShape(t *testing.T) {
 	if needsDeep != ^uint64(1) {
 		t.Fatalf("needsDeep = %#x, want ^uint64(1)", needsDeep)

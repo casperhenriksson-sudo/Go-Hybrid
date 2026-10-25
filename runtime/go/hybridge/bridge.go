@@ -30,13 +30,13 @@ import (
 func spHeadroom() uintptr
 
 //go:noescape
-func callFast1(fn unsafe.Pointer, a1 uintptr) uint64
+func callFast1(fn unsafe.Pointer, a1 uintptr) (value uint64, retry bool)
 
 //go:noescape
-func callFast2(fn unsafe.Pointer, a1, a2 uintptr) uint64
+func callFast2(fn unsafe.Pointer, a1, a2 uintptr) (value uint64, retry bool)
 
 //go:noescape
-func callFast3(fn unsafe.Pointer, a1, a2, a3 uintptr) uint64
+func callFast3(fn unsafe.Pointer, a1, a2, a3 uintptr) (value uint64, retry bool)
 
 //go:noescape
 func callDeep1(fn unsafe.Pointer, a1 uintptr, stack uintptr) uint64
@@ -52,7 +52,8 @@ func callDeep3(fn unsafe.Pointer, a1, a2, a3 uintptr, stack uintptr) uint64
 // carries a per-fn stack budget; unbounded callees take the deep path).
 const fastStackNeed = 4096
 
-// needsDeep: sentinel returned by the fast trampoline when headroom is short.
+// needsDeep is the legacy Cross1Raw diagnostic sentinel. Production retry
+// decisions use a separate boolean, never a native return value.
 const needsDeep = ^uint64(1)
 
 // Cross1/2/3: the generated crossing. Fast path = caller's stack (guard
@@ -73,14 +74,19 @@ var DeepCrossCount atomic.Uint64
 
 // Cross1Raw — DIAGNOSTIC ONLY (G2 bench): the fast trampoline WITHOUT the
 // deep-path retry. Returns the needsDeep sentinel when headroom is short —
-// callers MUST check; production must use Cross1.
+// callers MUST check. A native payload can equal that legacy sentinel too;
+// use Cross1 in production, where a separate retry flag preserves all values.
 func Cross1Raw(fn unsafe.Pointer, a1 uintptr) uint64 {
-	return callFast1(fn, a1)
+	value, retry := callFast1(fn, a1)
+	if retry {
+		return needsDeep
+	}
+	return value
 }
 
 func Cross1(fn unsafe.Pointer, a1 uintptr) uint64 {
-	v := callFast1(fn, a1)
-	if v == needsDeep {
+	v, retry := callFast1(fn, a1)
+	if retry {
 		DeepPathCount.Add(1)
 		i := acquireDeep()
 		v = callDeep1(fn, a1, deepTops[i])
@@ -90,8 +96,8 @@ func Cross1(fn unsafe.Pointer, a1 uintptr) uint64 {
 }
 
 func Cross2(fn unsafe.Pointer, a1, a2 uintptr) uint64 {
-	v := callFast2(fn, a1, a2)
-	if v == needsDeep {
+	v, retry := callFast2(fn, a1, a2)
+	if retry {
 		DeepPathCount.Add(1) // diagnostic parity: Cross1 counted; 2-4 were silent before row 4
 		i := acquireDeep()
 		v = callDeep2(fn, a1, a2, deepTops[i])
@@ -101,8 +107,8 @@ func Cross2(fn unsafe.Pointer, a1, a2 uintptr) uint64 {
 }
 
 func Cross3(fn unsafe.Pointer, a1, a2, a3 uintptr) uint64 {
-	v := callFast3(fn, a1, a2, a3)
-	if v == needsDeep {
+	v, retry := callFast3(fn, a1, a2, a3)
+	if retry {
 		DeepPathCount.Add(1) // diagnostic parity with Cross1 (see row 4)
 		i := acquireDeep()
 		v = callDeep3(fn, a1, a2, a3, deepTops[i])
@@ -151,14 +157,14 @@ func CrossDeep4(fn unsafe.Pointer, a1, a2, a3, a4 uintptr) uint64 {
 func SPHeadroomForTest() uintptr { return spHeadroom() }
 
 //go:noescape
-func callFast4(fn unsafe.Pointer, a1, a2, a3, a4 uintptr) uint64
+func callFast4(fn unsafe.Pointer, a1, a2, a3, a4 uintptr) (value uint64, retry bool)
 
 //go:noescape
 func callDeep4(fn unsafe.Pointer, a1, a2, a3, a4 uintptr, stack uintptr) uint64
 
 func Cross4(fn unsafe.Pointer, a1, a2, a3, a4 uintptr) uint64 {
-	v := callFast4(fn, a1, a2, a3, a4)
-	if v == needsDeep {
+	v, retry := callFast4(fn, a1, a2, a3, a4)
+	if retry {
 		DeepPathCount.Add(1) // diagnostic parity with Cross1 (see row 4)
 		i := acquireDeep()
 		v = callDeep4(fn, a1, a2, a3, a4, deepTops[i])
@@ -176,24 +182,24 @@ func Cross4(fn unsafe.Pointer, a1, a2, a3, a4 uintptr) uint64 {
 const SmallGuard = 1024
 
 //go:noescape
-func callFast1S(fn unsafe.Pointer, a1 uintptr) uint64
+func callFast1S(fn unsafe.Pointer, a1 uintptr) (value uint64, retry bool)
 
 //go:noescape
-func callFast2S(fn unsafe.Pointer, a1, a2 uintptr) uint64
+func callFast2S(fn unsafe.Pointer, a1, a2 uintptr) (value uint64, retry bool)
 
 //go:noescape
-func callFast3S(fn unsafe.Pointer, a1, a2, a3 uintptr) uint64
+func callFast3S(fn unsafe.Pointer, a1, a2, a3 uintptr) (value uint64, retry bool)
 
 //go:noescape
-func callFast4S(fn unsafe.Pointer, a1, a2, a3, a4 uintptr) uint64
+func callFast4S(fn unsafe.Pointer, a1, a2, a3, a4 uintptr) (value uint64, retry bool)
 
 // Cross1S..4S: the SMALL-class crossings — same deep-path retry, same
 // DeepPathCount diagnostic; only the in-trampoline guard differs (1024 vs
 // 4096). The default-class crossings are untouched so G2's measured evidence
 // stays valid.
 func Cross1S(fn unsafe.Pointer, a1 uintptr) uint64 {
-	v := callFast1S(fn, a1)
-	if v == needsDeep {
+	v, retry := callFast1S(fn, a1)
+	if retry {
 		DeepPathCount.Add(1)
 		i := acquireDeep()
 		v = callDeep1(fn, a1, deepTops[i])
@@ -203,8 +209,8 @@ func Cross1S(fn unsafe.Pointer, a1 uintptr) uint64 {
 }
 
 func Cross2S(fn unsafe.Pointer, a1, a2 uintptr) uint64 {
-	v := callFast2S(fn, a1, a2)
-	if v == needsDeep {
+	v, retry := callFast2S(fn, a1, a2)
+	if retry {
 		DeepPathCount.Add(1)
 		i := acquireDeep()
 		v = callDeep2(fn, a1, a2, deepTops[i])
@@ -214,8 +220,8 @@ func Cross2S(fn unsafe.Pointer, a1, a2 uintptr) uint64 {
 }
 
 func Cross3S(fn unsafe.Pointer, a1, a2, a3 uintptr) uint64 {
-	v := callFast3S(fn, a1, a2, a3)
-	if v == needsDeep {
+	v, retry := callFast3S(fn, a1, a2, a3)
+	if retry {
 		DeepPathCount.Add(1)
 		i := acquireDeep()
 		v = callDeep3(fn, a1, a2, a3, deepTops[i])
@@ -225,8 +231,8 @@ func Cross3S(fn unsafe.Pointer, a1, a2, a3 uintptr) uint64 {
 }
 
 func Cross4S(fn unsafe.Pointer, a1, a2, a3, a4 uintptr) uint64 {
-	v := callFast4S(fn, a1, a2, a3, a4)
-	if v == needsDeep {
+	v, retry := callFast4S(fn, a1, a2, a3, a4)
+	if retry {
 		DeepPathCount.Add(1)
 		i := acquireDeep()
 		v = callDeep4(fn, a1, a2, a3, a4, deepTops[i])
