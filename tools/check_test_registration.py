@@ -19,9 +19,9 @@ reference it, and fails closed on any file no reference reaches:
                       -> the path must be the invoked Python entry point
 
 Only explicit single-line Python invocations count. Comments, echoed text,
-step names, interpreter flags, chained later commands, and paths passed as
-arguments to other scripts register nothing. This is not a general
-shell/YAML interpreter.
+step names (including ordinary literal/folded block scalars), interpreter
+flags, chained later commands, and paths passed as arguments to other
+scripts register nothing. This is not a general shell/YAML interpreter.
 
 Usage: python3 tools/check_test_registration.py [--workflow PATH] [--root DIR]
 Exit:  0 = every test file is registered; 1 = unregistered file(s); 2 = guard misuse.
@@ -42,6 +42,13 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # as execution.
 PYTHON_RE = re.compile(r"(?:.*/)?python(?:3(?:\.\d+)?)?\Z")
 PYTHON_FLAGS_RE = re.compile(r"-[bBdEIOPqRsSuvx]+\Z")
+# Recognize ordinary mapping keys with literal/folded block values. Keep
+# this deliberately narrower than a YAML parser: quoted/plain keys, optional
+# sequence marker, indentation/chomping indicators, and trailing comments.
+YAML_BLOCK_SCALAR_RE = re.compile(
+    r"^ *(?:- +)?(?P<key>[A-Za-z_][\w.-]*|\"[^\"]+\"|'[^']+')"
+    r": *[|>](?:[1-9][+-]?|[+-][1-9]?)? *(?:#.*)?$"
+)
 
 
 def shell_words(line):
@@ -51,9 +58,24 @@ def shell_words(line):
 
 
 def python_commands(workflow_text):
-    """Yield arguments of explicit, single-line Python invocations."""
-    for line in workflow_text.splitlines():
-        line = line.strip()
+    """Yield Python invocations, ignoring non-run YAML block scalar content."""
+    non_run_scalar_indent = None
+    for raw_line in workflow_text.splitlines():
+        # Blank lines are scalar content too; they do not end a block.
+        if not raw_line.strip():
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        if non_run_scalar_indent is not None:
+            if indent > non_run_scalar_indent:
+                continue
+            non_run_scalar_indent = None
+        scalar = YAML_BLOCK_SCALAR_RE.fullmatch(raw_line)
+        if scalar and scalar.group("key").strip("\"'") != "run":
+            # Use the key column rather than the line's leading indent:
+            # a sibling run after '- name: |' aligns with 'name', not '-'.
+            non_run_scalar_indent = scalar.start("key")
+            continue
+        line = raw_line.strip()
         inline_run = re.match(r"(?:-\s+)?run:\s*(.*)", line)
         if inline_run:
             line = inline_run.group(1)
@@ -128,9 +150,10 @@ def is_registered_discover(name, patterns):
 
 def is_reached_discover(root, relpath, start, pattern):
     """Mirror discovery's directory boundary without importing test code."""
-    target = (Path(root) / relpath).resolve()
-    start_dir = (Path(root) / start).resolve()
-    if not start_dir.is_dir() or not target.is_relative_to(start_dir):
+    root_dir = Path(root).resolve()
+    target = (root_dir / relpath).resolve()
+    start_dir = (root_dir / start).resolve()
+    if not start_dir.is_dir() or not start_dir.is_relative_to(root_dir) or not target.is_relative_to(start_dir):
         return False
     if not is_registered_discover(target.name, [pattern]):
         return False
